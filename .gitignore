@@ -1,0 +1,18 @@
+# 大文件与可再生数据
+RAG/vectors.f32
+RAG/chunks.json
+RAG/index.json
+RAG/tang/
+RAG/song/
+RAG/*.pkl
+RAG/liweng-index.html
+RAG/OllamaSetup.exe
+
+# 运行时产物
+*.log
+__pycache__/
+.zcode/
+
+# 临时文件
+.t3.*
+.t4.*
