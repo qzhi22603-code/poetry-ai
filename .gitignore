@@ -16,3 +16,12 @@ __pycache__/
 # 临时文件
 .t3.*
 .t4.*
+
+# 训练大文件（可由脚本重建）
+训练数据/base_model/
+训练数据/merged*/
+训练数据/adapters*/
+训练数据/*.gguf
+训练数据/*.log
+训练数据/llama.cpp/
+训练数据/train*.log

@@ -43,8 +43,24 @@ def retrieve(query):
         for i, c in enumerate(CHUNKS):
             kw[i] = len(bg & bigrams(c[:400])) / len(bg)
         score = score + 0.2 * kw
-    top = np.argsort(score)[-TOP_K:][::-1]
-    return "\n---\n".join(CHUNKS[i][:CHAR_LIMIT] for i in top)
+    order = np.argsort(score)[::-1]
+    # 检索卫生：查询点名某韵书时，只注入该韵书条目，防交叉干扰
+    intent = "平水韵" if "平水韵" in query else ("词林正韵" if "词林正韵" in query else None)
+    top = []
+    for i in order:
+        c = CHUNKS[i][:20]
+        if intent is None or (intent in c) or ("韵" not in c):
+            top.append(i)
+        if len(top) >= TOP_K:
+            break
+    parts = []
+    for i in top:
+        t = CHUNKS[i]
+        # 韵表类密集字墙截短，防小模型复读退化
+        if ("韵部收字" in t[:30] or "韵字：" in t[:30]) and len(t) > 170:
+            t = t[:170] + "……（余字略）"
+        parts.append(t[:CHAR_LIMIT])
+    return "\n---\n".join(parts)
 
 
 def last_user_text(messages):
