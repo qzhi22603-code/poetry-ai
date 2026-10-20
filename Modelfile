@@ -1,5 +1,5 @@
 # 古典诗词助手 —— 基于 qwen2.5:3b
-FROM C:\Users\38107\Desktop\ai\训练数据\poemly-v12-q8.gguf
+FROM C:\Users\38107\Desktop\ai\训练数据\poemly-v13-q8.gguf
 
 PARAMETER temperature 0.7
 PARAMETER repeat_penalty 1.15
