@@ -2,7 +2,7 @@
 """poemly 自动 RAG 代理 v5：检索注入 + 创作意图保护 + 韵书意图过滤
 + 流式哨兵截停 + max_tokens 钳制 + 【格式净化器：乱输出重排为标准三段式】。
 监听 127.0.0.1:11499，上游 127.0.0.1:11434。fail-open。"""
-import json, os, re, urllib.request, urllib.error
+import json, os, re, time, urllib.request, urllib.error
 import numpy as np
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -161,7 +161,7 @@ class Proxy(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _upstream(self, method, body=None, headers=None):
+    def _upstream(self, method, body=None, headers=None, retry=True):
         req = urllib.request.Request(UPSTREAM + self.path, data=body, method=method)
         for k, v in (headers or {}).items():
             if k.lower() not in ("host", "content-length", "connection", "accept-encoding"):
@@ -169,6 +169,10 @@ class Proxy(BaseHTTPRequestHandler):
         try:
             return urllib.request.urlopen(req, timeout=900)
         except urllib.error.HTTPError as e:
+            if retry and e.code >= 500:
+                print(f"[warn] 上游 {e.code}，8秒后重试（模型加载中）", flush=True)
+                time.sleep(8)
+                return self._upstream(method, body, headers, retry=False)
             return e
 
     def do_GET(self):
@@ -188,8 +192,10 @@ class Proxy(BaseHTTPRequestHandler):
                 body["max_tokens"] = min(int(body["max_tokens"]), MAX_TOKENS_CAP)
             q = last_user_text(body.get("messages"))
             q = re.sub(r"\s+", " ", q).strip()[:200]
-            if (re.search(r"(写|作|赋|吟|填|来)(一?[首个]?)(.{0,6})(诗|词|绝句|律诗)", q)
-                    and not re.search(r"查|出处|哪首|谁写|什么意思|介绍|评价|韵|典故|范|赏析", q)):
+            creation = ((("写" in q or "作一" in q or "赋" in q or "吟" in q or "填" in q or "来一" in q)
+                         and re.search(r"诗|词|绝句|律诗", q))
+                        and not re.search(r"查|出处|哪首|谁写|什么意思|介绍|评价|韵|典故|范|赏析|格式|怎么", q))
+            if creation:
                 print(f"[rag] 创作意图，跳过注入: {q[:40]}", flush=True)
                 return json.dumps(body, ensure_ascii=False).encode("utf-8")
             if len(q) >= 4:
@@ -229,7 +235,7 @@ class Proxy(BaseHTTPRequestHandler):
             return "疑似新诗"
         return None
 
-    def _emit_text_sse(self, text, model="poemly", in_tok=1):
+    def _emit_text_events(self, text, model="poemly", in_tok=1):
         out_tok = max(1, len(text) // 2)
         evs = []
         evs.append("event: message_start\ndata: " + json.dumps({
@@ -253,18 +259,31 @@ class Proxy(BaseHTTPRequestHandler):
         evs.append("event: message_stop\ndata: " + json.dumps({
             "type": "message_stop"}, ensure_ascii=False) + "\n")
         payload = ("\n".join(evs) + "\n").encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
         self.wfile.write(payload)
 
     def _relay_stream(self, resp):
-        """缓冲全部文本（哨兵限流）→ 净化 → 一次性干净下发。"""
+        """先发头并持续心跳（含模型加载期），缓冲全部文本（哨兵限流）→ 净化 → 干净下发。"""
+        import socket as _s
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        # 上游读超时 5 秒：等待期也能发心跳
+        try:
+            resp.fp.raw._sock.settimeout(5)
+        except Exception:
+            pass
         acc = ""
         try:
-            for raw in resp:
+            while True:
+                try:
+                    raw = resp.readline()
+                except _s.timeout:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    continue
+                if not raw:
+                    break
                 line = raw.decode("utf-8", "replace")
                 if line.startswith("data:"):
                     try:
@@ -284,10 +303,17 @@ class Proxy(BaseHTTPRequestHandler):
                 resp.close()
             except Exception:
                 pass
-        purified = purify(acc)
+        if acc.strip():
+            purified = purify(acc)
+        else:
+            print("[warn] 上游无输出（可能模型加载中）", flush=True)
+            purified = "（模型刚刚换装完毕，请把上一条消息重发一次。）"
         if purified != acc:
             print(f"[fmt] 净化重排：{len(acc)}字 → {len(purified)}字", flush=True)
-        self._emit_text_sse(purified)
+        try:
+            self._emit_text_events(purified)
+        except Exception:
+            pass
 
     def _relay(self, method, body):
         try:
@@ -332,5 +358,7 @@ class Proxy(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"poemly RAG proxy v5 (净化器) on 127.0.0.1:{PORT} -> {UPSTREAM}", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", PORT), Proxy).serve_forever()
+    print(f"poemly RAG proxy v6 (心跳+净化) on 127.0.0.1:{PORT} -> {UPSTREAM}", flush=True)
+    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Proxy)
+    srv.daemon_threads = True
+    srv.serve_forever()
