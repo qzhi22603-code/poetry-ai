@@ -111,8 +111,11 @@ class Proxy(BaseHTTPRequestHandler):
             body = json.loads(raw)
             q = last_user_text(body.get("messages"))
             q = re.sub(r"\s+", " ", q).strip()[:200]
-            if len(q) < 4 or "cache_control" in raw.decode("utf-8", "replace")[:0]:
-                pass
+            # 创作意图保护：要求写诗/填词的请求不注入范诗（防模型把范本当续写清单）
+            if (re.search(r"(写|作|赋|吟|填|来)(一?[首个]?)(.{0,6})(诗|词|绝句|律诗)", q)
+                    and not re.search(r"查|出处|哪首|谁写|什么意思|介绍|评价|韵|典故|范|赏析", q)):
+                print(f"[rag] 创作意图，跳过注入: {q[:40]}", flush=True)
+                return raw
             if len(q) >= 4:
                 hits = retrieve(q)
                 sysf = body.get("system")
