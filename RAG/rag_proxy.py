@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""poemly 自动 RAG 代理 v4：检索注入 + 创作意图保护 + 韵书意图过滤
-+ 输出强制截停（流式哨兵：诗答结束后再开新篇→立刻掐流）+ 请求 max_tokens 钳制。
+"""poemly 自动 RAG 代理 v5：检索注入 + 创作意图保护 + 韵书意图过滤
++ 流式哨兵截停 + max_tokens 钳制 + 【格式净化器：乱输出重排为标准三段式】。
 监听 127.0.0.1:11499，上游 127.0.0.1:11434。fail-open。"""
 import json, os, re, urllib.request, urllib.error
 import numpy as np
@@ -12,8 +12,7 @@ EMBED_URL = UPSTREAM + "/api/embed"
 PORT = 11499
 TOP_K = 3
 CHAR_LIMIT = 320
-MAX_TOKENS_CAP = 896          # 请求钳制
-HARD_CHAR_CAP = 1500          # 流式硬顶（字符）
+MAX_TOKENS_CAP = 896
 
 CHUNKS = json.load(open(os.path.join(RAG, "chunks.json"), encoding="utf-8"))
 VECS = np.fromfile(os.path.join(RAG, "vectors.f32"), dtype=np.float32).reshape(-1, 1024)
@@ -79,6 +78,81 @@ INJECT_HEADER = (
     "作答时依据这些资料；资料中没有的不要编造，可说明\"知识库未收录\"。这与你的创作准则一致。\n\n"
 )
 
+# ---------------- 格式净化器 ----------------
+COUPLET = re.compile(r"^([\u4e00-\u9fff]{5,7})[，,]([\u4e00-\u9fff]{5,7})[。.]$")
+SINGLE = re.compile(r"^([\u4e00-\u9fff]{5,7})[，,。.]?$")
+
+
+def _clean_line(l):
+    l = l.strip().strip(">").strip()
+    l = re.sub(r"^[\"「'\-—*\d\.\s]+", "", l).strip()
+    return l.rstrip("\"'」").strip()
+
+
+def _parse_poem_lines(lines):
+    """返回 (成对句列表, 起始索引)——最长连续诗句段。"""
+    best, best_start = [], -1
+    cur, cur_start = [], -1
+    for i, l in enumerate(lines):
+        l2 = _clean_line(l)
+        m = COUPLET.match(l2) or COUPLET.match(l2.replace("，", "，").replace("。", "。"))
+        ok = bool(m) or (SINGLE.match(l2) and len(l2) in (5, 7))
+        if ok:
+            if cur_start == -1:
+                cur_start = i
+            if m:
+                cur.append((m.group(1), m.group(2)))
+            else:
+                cur.append((l2, None))
+        else:
+            if len(cur) >= 2 and len(cur) > len(best):
+                best, best_start = cur[:], cur_start
+            cur, cur_start = [], -1
+    if len(cur) >= 2 and len(cur) > len(best):
+        best, best_start = cur[:], cur_start
+    # 合并散句成对
+    units = []
+    for a, b in best:
+        units.append(a)
+        if b:
+            units.append(b)
+    if len(units) % 2 == 1:
+        units = units[:-1]
+    return units, best_start
+
+
+def purify(text):
+    """把混乱输出重排为标准三段式；识别不了则原样返回。"""
+    if "诗" not in text and "《" not in text:
+        return text
+    lines = text.splitlines()
+    units, pstart = _parse_poem_lines(lines)
+    if len(units) < 4 or len(units) % 2 != 0:
+        return text
+    per = len(units[0])
+    if per not in (5, 7) or any(len(u) != per for u in units):
+        return text
+    # 标题
+    tm = re.search(r"《([^《》\n]{1,12})》", text)
+    title = tm.group(1) if tm else "无题"
+    # 立意
+    lm = re.search(r"立意[：:]\s*([^\n]{4,60})", text)
+    liyi = lm.group(1).strip().rstrip("。") + "。" if lm else f"以《{title}》为题，即景生情，托物见志。"
+    # 意象解释：收集含"——"的行（按引句去重）
+    seen, explains = set(), []
+    for l in lines:
+        l = _clean_line(l)
+        if "——" in l and len(l) > 8:
+            key = re.sub(r"[^\u4e00-\u9fff]", "", l)[:8]
+            if key not in seen:
+                seen.add(key)
+                # 统一解释行格式："句"——解释
+                l = re.sub(r"^([^\"']{1,14}?)——", r'"\1"——', l) if not l.startswith('"') else l
+                explains.append(l)
+    body = "\n".join(units[i] + "，" + units[i + 1] + "。" for i in range(0, len(units), 2))
+    out = f"立意：{liyi}\n\n诗：\n《{title}》\n{body}\n\n意象解释：\n" + "\n".join(explains[:8])
+    return out
+
 
 class Proxy(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -107,7 +181,6 @@ class Proxy(BaseHTTPRequestHandler):
         self._relay("POST", raw)
 
     def _prepare(self, raw):
-        """检索注入 + 创作意图保护 + max_tokens 钳制。"""
         try:
             body = json.loads(raw)
             if body.get("max_tokens"):
@@ -134,13 +207,11 @@ class Proxy(BaseHTTPRequestHandler):
             print("[rag] 注入失败(fail-open):", e, flush=True)
             return raw
 
-    # ---------- 流式哨兵 ----------
     def _should_cut(self, acc):
-        if len(acc) > 1100:
+        if len(acc) > 1300:
             return "硬顶"
-        # 近期重复检测（车轱辘话/复读）
         tail80 = acc[-80:]
-        if len(acc) > 300 and acc.count(tail80[-30:]) >= 2 and len(tail80[-30:]) >= 12:
+        if len(acc) > 300 and len(tail80[-30:]) >= 12 and acc.count(tail80[-30:]) >= 2:
             return "复读"
         idx = acc.find("意象解释")
         if idx == -1:
@@ -150,15 +221,41 @@ class Proxy(BaseHTTPRequestHandler):
             return "开新篇"
         if tail.count("《") >= 1 and len(re.sub(r"[^\u4e00-\u9fff]", "", tail)) > 260:
             return "疑似新诗"
-        if tail.count("——") > 10 or tail.count("\"") > 24:
-            return "解释冗长"
         return None
 
-    def _relay_stream(self, resp):
+    def _emit_text_sse(self, text, model="poemly", in_tok=1):
+        out_tok = max(1, len(text) // 2)
+        evs = []
+        evs.append("event: message_start\ndata: " + json.dumps({
+            "type": "message_start",
+            "message": {"id": "msg_proxy_" + str(os.getpid()), "type": "message",
+                        "role": "assistant", "model": model, "content": [],
+                        "stop_reason": None, "stop_sequence": None,
+                        "usage": {"input_tokens": in_tok, "output_tokens": 1}}}, ensure_ascii=False) + "\n")
+        evs.append("event: content_block_start\ndata: " + json.dumps({
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "text", "text": ""}}, ensure_ascii=False) + "\n")
+        for j in range(0, len(text), 240):
+            evs.append("event: content_block_delta\ndata: " + json.dumps({
+                "type": "content_block_delta", "index": 0,
+                "delta": {"type": "text_delta", "text": text[j:j + 240]}}, ensure_ascii=False) + "\n")
+        evs.append("event: content_block_stop\ndata: " + json.dumps({
+            "type": "content_block_stop", "index": 0}, ensure_ascii=False) + "\n")
+        evs.append("event: message_delta\ndata: " + json.dumps({
+            "type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"input_tokens": in_tok, "output_tokens": out_tok}}, ensure_ascii=False) + "\n")
+        evs.append("event: message_stop\ndata: " + json.dumps({
+            "type": "message_stop"}, ensure_ascii=False) + "\n")
+        payload = ("\n".join(evs) + "\n").encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
+        self.wfile.write(payload)
+
+    def _relay_stream(self, resp):
+        """缓冲全部文本（哨兵限流）→ 净化 → 一次性干净下发。"""
         acc = ""
         try:
             for raw in resp:
@@ -167,29 +264,13 @@ class Proxy(BaseHTTPRequestHandler):
                     try:
                         ev = json.loads(line[5:].strip())
                     except Exception:
-                        self.wfile.write(raw)
-                        self.wfile.flush()
                         continue
                     if ev.get("type") == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
                         acc += ev["delta"].get("text", "")
                         why = self._should_cut(acc)
                         if why:
                             print(f"[stop] 哨兵截停（{why}），已输出{len(acc)}字", flush=True)
-                            term = ("event: content_block_stop\n"
-                                    'data: {"type":"content_block_stop","index":0}\n\n'
-                                    "event: message_delta\n"
-                                    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
-                                    '"usage":{"input_tokens":1,"output_tokens":1}}\n\n'
-                                    "event: message_stop\n"
-                                    'data: {"type":"message_stop"}\n\n')
-                            self.wfile.write(term.encode("utf-8"))
-                            try:
-                                resp.close()
-                            except Exception:
-                                pass
-                            return
-                self.wfile.write(raw)
-                self.wfile.flush()
+                            break
         except Exception:
             pass
         finally:
@@ -197,6 +278,10 @@ class Proxy(BaseHTTPRequestHandler):
                 resp.close()
             except Exception:
                 pass
+        purified = purify(acc)
+        if purified != acc:
+            print(f"[fmt] 净化重排：{len(acc)}字 → {len(purified)}字", flush=True)
+        self._emit_text_sse(purified)
 
     def _relay(self, method, body):
         try:
@@ -212,28 +297,27 @@ class Proxy(BaseHTTPRequestHandler):
         if "event-stream" in ctype:
             if self.path.rstrip("/") == "/v1/messages":
                 self._relay_stream(resp)
-            else:
-                self.send_response(200)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            try:
+                while True:
+                    chunk = resp.read(4096)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except Exception:
+                pass
+            finally:
                 try:
-                    while True:
-                        chunk = resp.read(4096)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
+                    resp.close()
                 except Exception:
                     pass
-                finally:
-                    try:
-                        resp.close()
-                    except Exception:
-                        pass
             return
         self.send_response(resp.code if hasattr(resp, "code") else 200)
-        self.send_header("Content-Type", ctype)
         data = resp.read()
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -242,5 +326,5 @@ class Proxy(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"poemly RAG proxy v4 on 127.0.0.1:{PORT} -> {UPSTREAM}, chunks={len(CHUNKS)}", flush=True)
+    print(f"poemly RAG proxy v5 (净化器) on 127.0.0.1:{PORT} -> {UPSTREAM}", flush=True)
     ThreadingHTTPServer(("127.0.0.1", PORT), Proxy).serve_forever()
