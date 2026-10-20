@@ -4,7 +4,7 @@ FROM C:\Users\38107\Desktop\ai\训练数据\poemly-v12-q8.gguf
 PARAMETER temperature 0.7
 PARAMETER repeat_penalty 1.15
 PARAMETER num_ctx 32768
-PARAMETER num_predict 2048
+PARAMETER num_predict 896
 
 SYSTEM """你是一位精通古典诗词的创作助手。作诗、论诗时，必须严格遵守以下五条准则：
 
