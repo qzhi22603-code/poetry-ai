@@ -183,7 +183,20 @@ class Proxy(BaseHTTPRequestHandler):
         raw = self.rfile.read(n)
         if self.path.rstrip("/") == "/v1/messages":
             raw = self._prepare(raw)
-        self._relay("POST", raw)
+        resp = self._upstream("POST", raw, dict(self.headers))
+        ctype = resp.headers.get("Content-Type", "application/json")
+        if "event-stream" in ctype:
+            self._relay_stream(resp, raw)
+            return
+        self._relay_response(resp)
+
+    def _relay_response(self, resp):
+        self.send_response(resp.code if hasattr(resp, "code") else 200)
+        data = resp.read()
+        self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _prepare(self, raw):
         try:
@@ -261,14 +274,9 @@ class Proxy(BaseHTTPRequestHandler):
         payload = ("\n".join(evs) + "\n").encode("utf-8")
         self.wfile.write(payload)
 
-    def _relay_stream(self, resp):
-        """先发头并持续心跳（含模型加载期），缓冲全部文本（哨兵限流）→ 净化 → 干净下发。"""
+    def _buffer_stream(self, resp):
+        """读完整条上游流（哨兵限流），返回文本。"""
         import socket as _s
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        # 上游读超时 5 秒：等待期也能发心跳
         try:
             resp.fp.raw._sock.settimeout(5)
         except Exception:
@@ -303,13 +311,51 @@ class Proxy(BaseHTTPRequestHandler):
                 resp.close()
             except Exception:
                 pass
-        if acc.strip():
-            purified = purify(acc)
-        else:
+        return acc
+
+    def _quality_gate(self, text):
+        """质量闸门：是创作类回答且含可解析的完整诗才放行。"""
+        if not text.strip():
+            return False
+        if "诗" not in text and "《" not in text:
+            return True  # 非创作类（问答等）不拦
+        units, _ = _parse_poem_lines(text.splitlines())
+        return len(units) >= 4
+
+    def _relay_stream(self, resp, raw_body=None):
+        """心跳保活 → 缓冲 → 净化 → 质量闸门（不合格自动重写一次）→ 下发。"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        acc = self._buffer_stream(resp)
+        purified = purify(acc) if acc.strip() else ""
+        if not acc.strip():
             print("[warn] 上游无输出（可能模型加载中）", flush=True)
-            purified = "（模型刚刚换装完毕，请把上一条消息重发一次。）"
+        if acc.strip() and not self._quality_gate(purified):
+            print("[gate] 质量闸门未过，自动重写一次", flush=True)
+            try:
+                body = json.loads(raw_body)
+                strict = {"type": "text", "text":
+                          "【格式硬性要求】必须严格按以下三段格式输出，不得增删、不得夹注：\n"
+                          "立意：（一两句话）\n\n诗：\n《题目》\n诗句（两句一行，每句字数严格依体裁）\n\n"
+                          "意象解释：\n逐句解释（每句一行）。写完立即停止。"}
+                if isinstance(body.get("system"), list):
+                    body["system"] = body["system"] + [strict]
+                resp2 = self._upstream("POST", json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                                       {"Content-Type": "application/json"})
+                acc2 = self._buffer_stream(resp2)
+                if acc2.strip():
+                    purified2 = purify(acc2)
+                    if self._quality_gate(purified2):
+                        print("[gate] 重写通过", flush=True)
+                        acc, purified = acc2, purified2
+            except Exception as e:
+                print("[gate] 重写失败:", e, flush=True)
         if purified != acc:
             print(f"[fmt] 净化重排：{len(acc)}字 → {len(purified)}字", flush=True)
+        if not purified.strip():
+            purified = "（模型刚刚换装完毕，请把上一条消息重发一次。）"
         try:
             self._emit_text_events(purified)
         except Exception:
