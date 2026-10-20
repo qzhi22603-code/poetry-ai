@@ -134,10 +134,14 @@ class Proxy(BaseHTTPRequestHandler):
             print("[rag] 注入失败(fail-open):", e, flush=True)
             return raw
 
-    # ---------- 流式哨兵：检测到完整诗答后再开新篇→掐流 ----------
+    # ---------- 流式哨兵 ----------
     def _should_cut(self, acc):
-        if len(acc) > HARD_CHAR_CAP:
+        if len(acc) > 1100:
             return "硬顶"
+        # 近期重复检测（车轱辘话/复读）
+        tail80 = acc[-80:]
+        if len(acc) > 300 and acc.count(tail80[-30:]) >= 2 and len(tail80[-30:]) >= 12:
+            return "复读"
         idx = acc.find("意象解释")
         if idx == -1:
             return None
@@ -146,6 +150,8 @@ class Proxy(BaseHTTPRequestHandler):
             return "开新篇"
         if tail.count("《") >= 1 and len(re.sub(r"[^\u4e00-\u9fff]", "", tail)) > 260:
             return "疑似新诗"
+        if tail.count("——") > 10 or tail.count("\"") > 24:
+            return "解释冗长"
         return None
 
     def _relay_stream(self, resp):
@@ -172,7 +178,8 @@ class Proxy(BaseHTTPRequestHandler):
                             term = ("event: content_block_stop\n"
                                     'data: {"type":"content_block_stop","index":0}\n\n'
                                     "event: message_delta\n"
-                                    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\n'
+                                    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+                                    '"usage":{"input_tokens":1,"output_tokens":1}}\n\n'
                                     "event: message_stop\n"
                                     'data: {"type":"message_stop"}\n\n')
                             self.wfile.write(term.encode("utf-8"))
