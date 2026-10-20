@@ -161,10 +161,20 @@ class Proxy(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key, anthropic-version")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
     def _upstream(self, method, body=None, headers=None, retry=True):
         req = urllib.request.Request(UPSTREAM + self.path, data=body, method=method)
         for k, v in (headers or {}).items():
-            if k.lower() not in ("host", "content-length", "connection", "accept-encoding"):
+            if k.lower() not in ("host", "content-length", "connection", "accept-encoding", "origin", "access-control-request-method", "access-control-request-headers"):
                 req.add_header(k, v)
         try:
             return urllib.request.urlopen(req, timeout=900)
@@ -327,6 +337,7 @@ class Proxy(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
+        self._cors()
         self.end_headers()
         acc = self._buffer_stream(resp)
         purified = purify(acc) if acc.strip() else ""
