@@ -90,12 +90,14 @@ def _clean_line(l):
 
 
 def _parse_poem_lines(lines):
-    """返回 (成对句列表, 起始索引)——最长连续诗句段。"""
+    """返回 (成对句列表, 起始索引)——最长连续诗句段；诗句间的解释行（含——）视为透明。"""
     best, best_start = [], -1
     cur, cur_start = [], -1
     for i, l in enumerate(lines):
         l2 = _clean_line(l)
-        m = COUPLET.match(l2) or COUPLET.match(l2.replace("，", "，").replace("。", "。"))
+        if "——" in l2 and len(l2) > 8:  # 解释行：跳过但不断诗句链
+            continue
+        m = COUPLET.match(l2)
         ok = bool(m) or (SINGLE.match(l2) and len(l2) in (5, 7))
         if ok:
             if cur_start == -1:
@@ -104,13 +106,12 @@ def _parse_poem_lines(lines):
                 cur.append((m.group(1), m.group(2)))
             else:
                 cur.append((l2, None))
-        else:
+        elif l2 and not ok:
             if len(cur) >= 2 and len(cur) > len(best):
                 best, best_start = cur[:], cur_start
             cur, cur_start = [], -1
     if len(cur) >= 2 and len(cur) > len(best):
         best, best_start = cur[:], cur_start
-    # 合并散句成对
     units = []
     for a, b in best:
         units.append(a)
@@ -213,11 +214,16 @@ class Proxy(BaseHTTPRequestHandler):
         tail80 = acc[-80:]
         if len(acc) > 300 and len(tail80[-30:]) >= 12 and acc.count(tail80[-30:]) >= 2:
             return "复读"
-        idx = acc.find("意象解释")
-        if idx == -1:
+        # 状态机：先有真诗节头（诗：\n《题》），其后的"意象解释："才算章节标记
+        m_shi = re.search(r"诗[：:]\s*\n\s*《", acc)
+        if not m_shi:
             return None
-        tail = acc[idx + 4:]
-        if "立意" in tail or "诗：" in tail or "意象解释" in tail:
+        after = acc[m_shi.end():]
+        m_yi = re.search(r"意象解释[：:]", after)
+        if not m_yi:
+            return None
+        tail = after[m_yi.end():]
+        if re.search(r"\n\s*立意[：:]", tail) or re.search(r"诗[：:]\s*\n\s*《", tail):
             return "开新篇"
         if tail.count("《") >= 1 and len(re.sub(r"[^\u4e00-\u9fff]", "", tail)) > 260:
             return "疑似新诗"
