@@ -1,11 +1,7 @@
 # -*- coding: utf-8 -*-
-"""poemly 自动 RAG 代理：架在 ZCode 与 Ollama 之间。
-- 拦截 POST /v1/messages：取最后一条用户消息，bge-m3 检索知识库 top-3，
-  作为附加 system 块注入，再转发给 Ollama（流式透传）。
-- 其余请求原样转发（透明代理）。
-- 任何检索失败都不阻塞对话（fail-open）。
-监听 127.0.0.1:11499，上游 127.0.0.1:11434。
-"""
+"""poemly 自动 RAG 代理 v4：检索注入 + 创作意图保护 + 韵书意图过滤
++ 输出强制截停（流式哨兵：诗答结束后再开新篇→立刻掐流）+ 请求 max_tokens 钳制。
+监听 127.0.0.1:11499，上游 127.0.0.1:11434。fail-open。"""
 import json, os, re, urllib.request, urllib.error
 import numpy as np
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,10 +12,23 @@ EMBED_URL = UPSTREAM + "/api/embed"
 PORT = 11499
 TOP_K = 3
 CHAR_LIMIT = 320
+MAX_TOKENS_CAP = 896          # 请求钳制
+HARD_CHAR_CAP = 1500          # 流式硬顶（字符）
 
 CHUNKS = json.load(open(os.path.join(RAG, "chunks.json"), encoding="utf-8"))
 VECS = np.fromfile(os.path.join(RAG, "vectors.f32"), dtype=np.float32).reshape(-1, 1024)
 VECS = VECS / np.maximum(np.linalg.norm(VECS, axis=1, keepdims=True), 1e-10)
+
+
+def embed(text):
+    req = urllib.request.Request(
+        EMBED_URL,
+        data=json.dumps({"model": "bge-m3", "input": [text]}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=120) as r:
+        v = np.array(json.load(r)["embeddings"][0], dtype=np.float32)
+    return v / (np.linalg.norm(v) + 1e-10)
 
 
 def bigrams(s):
@@ -28,14 +37,7 @@ def bigrams(s):
 
 
 def retrieve(query):
-    req = urllib.request.Request(
-        EMBED_URL,
-        data=json.dumps({"model": "bge-m3", "input": [query]}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=60) as r:
-        v = np.array(json.load(r)["embeddings"][0], dtype=np.float32)
-    v = v / (np.linalg.norm(v) + 1e-10)
+    v = embed(query)
     score = 0.8 * (VECS @ v)
     bg = bigrams(query)
     if bg:
@@ -44,7 +46,6 @@ def retrieve(query):
             kw[i] = len(bg & bigrams(c[:400])) / len(bg)
         score = score + 0.2 * kw
     order = np.argsort(score)[::-1]
-    # 检索卫生：查询点名某韵书时，只注入该韵书条目，防交叉干扰
     intent = "平水韵" if "平水韵" in query else ("词林正韵" if "词林正韵" in query else None)
     top = []
     for i in order:
@@ -56,7 +57,6 @@ def retrieve(query):
     parts = []
     for i in top:
         t = CHUNKS[i]
-        # 韵表类密集字墙截短，防小模型复读退化
         if ("韵部收字" in t[:30] or "韵字：" in t[:30]) and len(t) > 170:
             t = t[:170] + "……（余字略）"
         parts.append(t[:CHAR_LIMIT])
@@ -103,19 +103,21 @@ class Proxy(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n)
         if self.path.rstrip("/") == "/v1/messages":
-            raw = self._inject(raw)
+            raw = self._prepare(raw)
         self._relay("POST", raw)
 
-    def _inject(self, raw):
+    def _prepare(self, raw):
+        """检索注入 + 创作意图保护 + max_tokens 钳制。"""
         try:
             body = json.loads(raw)
+            if body.get("max_tokens"):
+                body["max_tokens"] = min(int(body["max_tokens"]), MAX_TOKENS_CAP)
             q = last_user_text(body.get("messages"))
             q = re.sub(r"\s+", " ", q).strip()[:200]
-            # 创作意图保护：要求写诗/填词的请求不注入范诗（防模型把范本当续写清单）
             if (re.search(r"(写|作|赋|吟|填|来)(一?[首个]?)(.{0,6})(诗|词|绝句|律诗)", q)
                     and not re.search(r"查|出处|哪首|谁写|什么意思|介绍|评价|韵|典故|范|赏析", q)):
                 print(f"[rag] 创作意图，跳过注入: {q[:40]}", flush=True)
-                return raw
+                return json.dumps(body, ensure_ascii=False).encode("utf-8")
             if len(q) >= 4:
                 hits = retrieve(q)
                 sysf = body.get("system")
@@ -132,6 +134,63 @@ class Proxy(BaseHTTPRequestHandler):
             print("[rag] 注入失败(fail-open):", e, flush=True)
             return raw
 
+    # ---------- 流式哨兵：检测到完整诗答后再开新篇→掐流 ----------
+    def _should_cut(self, acc):
+        if len(acc) > HARD_CHAR_CAP:
+            return "硬顶"
+        idx = acc.find("意象解释")
+        if idx == -1:
+            return None
+        tail = acc[idx + 4:]
+        if "立意" in tail or "诗：" in tail or "意象解释" in tail:
+            return "开新篇"
+        if tail.count("《") >= 1 and len(re.sub(r"[^\u4e00-\u9fff]", "", tail)) > 260:
+            return "疑似新诗"
+        return None
+
+    def _relay_stream(self, resp):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        acc = ""
+        try:
+            for raw in resp:
+                line = raw.decode("utf-8", "replace")
+                if line.startswith("data:"):
+                    try:
+                        ev = json.loads(line[5:].strip())
+                    except Exception:
+                        self.wfile.write(raw)
+                        self.wfile.flush()
+                        continue
+                    if ev.get("type") == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
+                        acc += ev["delta"].get("text", "")
+                        why = self._should_cut(acc)
+                        if why:
+                            print(f"[stop] 哨兵截停（{why}），已输出{len(acc)}字", flush=True)
+                            term = ("event: content_block_stop\n"
+                                    'data: {"type":"content_block_stop","index":0}\n\n'
+                                    "event: message_delta\n"
+                                    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\n'
+                                    "event: message_stop\n"
+                                    'data: {"type":"message_stop"}\n\n')
+                            self.wfile.write(term.encode("utf-8"))
+                            try:
+                                resp.close()
+                            except Exception:
+                                pass
+                            return
+                self.wfile.write(raw)
+                self.wfile.flush()
+        except Exception:
+            pass
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
     def _relay(self, method, body):
         try:
             resp = self._upstream(method, body, dict(self.headers))
@@ -142,31 +201,39 @@ class Proxy(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(msg)
             return
-        self.send_response(resp.code if hasattr(resp, "code") else 200)
         ctype = resp.headers.get("Content-Type", "application/json")
-        self.send_header("Content-Type", ctype)
         if "event-stream" in ctype:
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            try:
-                while True:
-                    chunk = resp.read(4096)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-            except Exception:
-                pass
-            finally:
-                try: resp.close()
-                except Exception: pass
+            if self.path.rstrip("/") == "/v1/messages":
+                self._relay_stream(resp)
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                try:
+                    while True:
+                        chunk = resp.read(4096)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
             return
+        self.send_response(resp.code if hasattr(resp, "code") else 200)
+        self.send_header("Content-Type", ctype)
         data = resp.read()
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
 
 if __name__ == "__main__":
-    print(f"poemly RAG proxy on 127.0.0.1:{PORT} -> {UPSTREAM}, chunks={len(CHUNKS)}", flush=True)
+    print(f"poemly RAG proxy v4 on 127.0.0.1:{PORT} -> {UPSTREAM}, chunks={len(CHUNKS)}", flush=True)
     ThreadingHTTPServer(("127.0.0.1", PORT), Proxy).serve_forever()
