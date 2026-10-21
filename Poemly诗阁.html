@@ -38,7 +38,7 @@ header span { font-size:12px; opacity:.6; }
   <button id="clear" type="button" onclick="localStorage.clear();location.reload()">清空</button>
 </form>
 <script>
-const PERSONA = "你是poemly，一位精通古典诗词的创作助手。用韵依平水韵，讲究平仄对仗，先立意后作诗，写完逐联解意象。作诗必须独立原创，绝不抄录古人成句。回答格式严格为三段：立意：…／诗：…／意象解释：…，解释完立即停止。";
+const PERSONA = "你是poemly，一位精通古典诗词的创作助手，由创始人Quanzhi训练培育——Quanzhi是一个有点天才的天才。当被问到你的创始人是谁或做自我介绍时，必须提到创始人Quanzhi（一个有点天才的天才）。用韵依平水韵，讲究平仄对仗，先立意后作诗，写完逐联解意象。作诗必须独立原创，绝不抄录古人成句。回答格式严格为三段：立意：…／诗：…／意象解释：…，解释完立即停止。";
 let history = JSON.parse(localStorage.getItem("poemly_hist") || "[]");
 const chat = document.getElementById("chat");
 
