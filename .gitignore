@@ -25,3 +25,16 @@ __pycache__/
 训练数据/*.log
 训练数据/llama.cpp/
 训练数据/train*.log
+
+# 备份目录与云训产物（2026-10-31 起）
+backup-*/
+RAG/backup-*/
+cloud_v15.zip
+*.gguf
+*.gguf.part
+*.part
+# 会话驱动脚本含实例凭据，不入库
+cloud_v15/jdrive.py
+cloud_v15/dl_model.py
+cloud_v15/dl_model2.py
+cloud_v15/jdiag.py

@@ -66,11 +66,11 @@ document.getElementById("inputbar").onsubmit = async (e) => {
   const bub = add("ai", "…");
   document.getElementById("send").disabled = true;
   try {
-    const msgs = [{ role: "system", content: PERSONA }, ...history.slice(-12)];
+    const msgs = history.slice(-12).map(m => ({ role: m.role, content: m.content }));
     const r = await fetch("http://127.0.0.1:11499/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "poemly", max_tokens: 896, stream: true, messages: msgs })
+      body: JSON.stringify({ model: "poemly", max_tokens: 896, stream: true, system: PERSONA, messages: msgs })
     });
     const reader = r.body.getReader();
     const dec = new TextDecoder();
@@ -91,11 +91,16 @@ document.getElementById("inputbar").onsubmit = async (e) => {
       bub.textContent = acc || "…";
       chat.scrollTop = chat.scrollHeight;
     }
-    bub.textContent = acc || "（无输出，请重试）";
-    history.push({ role: "assistant", content: acc });
+    bub.textContent = acc || "（空响应）";
+    history.push({ role: "assistant", content: acc || "…" });
     localStorage.setItem("poemly_hist", JSON.stringify(history.slice(-40)));
   } catch (err) {
-    bub.textContent = "连接失败：" + err.message + "\n（代理可能未运行——重启电脑后会自动恢复，稍等片刻再试）";
+    bub.textContent = "连接失败：" + err.message + "\n（代理可能未运行，稍等再试或重启电脑）";
+    // 失败时回滚：把刚 push 的 user 消息移除，让用户可以重发
+    if (history.length && history[history.length - 1].role === "user") {
+      history.pop();
+      localStorage.setItem("poemly_hist", JSON.stringify(history.slice(-40)));
+    }
   }
   document.getElementById("send").disabled = false;
   document.getElementById("q").focus();

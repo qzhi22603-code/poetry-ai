@@ -22,7 +22,7 @@ VECS = VECS / np.maximum(np.linalg.norm(VECS, axis=1, keepdims=True), 1e-10)
 def embed(text):
     req = urllib.request.Request(
         EMBED_URL,
-        data=json.dumps({"model": "bge-m3", "input": [text]}).encode("utf-8"),
+        data=json.dumps({"model": "bge-m3-cpu", "input": [text]}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=120) as r:
@@ -75,7 +75,9 @@ def last_user_text(messages):
 
 INJECT_HEADER = (
     "【知识库检索结果】以下是针对用户本轮问题自动检索到的相关资料（韵表/诗词/典故原文），"
-    "作答时依据这些资料；资料中没有的不要编造，可说明\"知识库未收录\"。这与你的创作准则一致。\n\n"
+    "作答时优先依据这些资料；资料中没有时，若问题关于你自己（身份、创始人Quanzhi、能力边界）"
+    "或诗词创作本身，可依据你已学到的东西如实作答；其余事实性内容不要编造，可说明\"知识库未收录\"。"
+    "这与你的创作准则一致。\n\n"
 )
 
 # ---------------- 格式净化器 ----------------
@@ -324,11 +326,12 @@ class Proxy(BaseHTTPRequestHandler):
         return acc
 
     def _quality_gate(self, text):
-        """质量闸门：是创作类回答且含可解析的完整诗才放行。"""
+        """质量闸门：只有含真诗节头（诗：\n《题》）的创作类回答才检查诗句完整。"""
         if not text.strip():
             return False
-        if "诗" not in text and "《" not in text:
-            return True  # 非创作类（问答等）不拦
+        # 必须有真诗节头才算创作类；否则是问答/聊天，直接放行
+        if not re.search(r"诗[：:]\s*\n\s*《", text):
+            return True
         units, _ = _parse_poem_lines(text.splitlines())
         return len(units) >= 4
 
@@ -337,6 +340,7 @@ class Proxy(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")  # 载荷发完即断流，前端 reader 才能收到 done
         self._cors()
         self.end_headers()
         acc = self._buffer_stream(resp)
@@ -371,6 +375,7 @@ class Proxy(BaseHTTPRequestHandler):
             self._emit_text_events(purified)
         except Exception:
             pass
+        self.close_connection = True  # P1 修复：确保连接关闭，诗阁按钮不再卡死
 
     def _relay(self, method, body):
         try:
@@ -390,6 +395,7 @@ class Proxy(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
             self.end_headers()
             try:
                 while True:
