@@ -63,13 +63,18 @@ def collate(batch):
             "labels": torch.tensor([x["labels"] + [-100] * (maxlen - len(x["labels"])) for x in batch]),
             "attention_mask": torch.tensor([[1] * len(x["input_ids"]) + [0] * (maxlen - len(x["input_ids"])) for x in batch])}
 
-# 4bit NF4 双量化配置（QLoRA 的 Q）
-bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                         bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
-# 加载基座到 0 号 GPU
-model = AutoModelForCausalLM.from_pretrained(BASE, quantization_config=bnb, device_map={"": 0})
+# 载入基座：大显存(>=40GB)直接 bf16 LoRA，稳且准；小卡走 4bit QLoRA
+MEM = torch.cuda.get_device_properties(0).total_memory / 1024**3
+if MEM >= 40:
+    print(f"[load] GPU {MEM:.1f}GB -> bf16 LoRA（不量化）", flush=True)
+    model = AutoModelForCausalLM.from_pretrained(BASE, torch_dtype=torch.bfloat16, device_map={"": 0})
+else:
+    print(f"[load] GPU {MEM:.1f}GB -> 4bit QLoRA", flush=True)
+    bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                             bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
+    model = AutoModelForCausalLM.from_pretrained(BASE, quantization_config=bnb, device_map={"": 0})
+    model = prepare_model_for_kbit_training(model)
 model.config.use_cache = False
-model = prepare_model_for_kbit_training(model)
 # LoRA 配置（QLoRA 的 LoRA）：r=16、alpha=32、七个线性层全插旁路
 lora = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
                   target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
@@ -78,10 +83,9 @@ model.print_trainable_parameters()
 
 # 超参：按显存自适应批大小，等效 batch 恒为 16（优化动力学不变）
 # 24GB(4090)=4x4；16GB(4060Ti/4080)=2x8；12GB(3080)=1x16
-V = torch.cuda.get_device_properties(0).total_memory / 1024**3
-BS = 4 if V >= 20 else (2 if V >= 14 else 1)
+BS = 4 if MEM >= 20 else (2 if MEM >= 14 else 1)
 GA = 16 // BS
-print(f"GPU 显存 {V:.1f}GB -> batch {BS} x accum {GA} (等效 {BS * GA})", flush=True)
+print(f"GPU 显存 {MEM:.1f}GB -> batch {BS} x accum {GA} (等效 {BS * GA})", flush=True)
 args = TrainingArguments(
     output_dir=OUT, num_train_epochs=2, per_device_train_batch_size=BS, gradient_accumulation_steps=GA,
     learning_rate=1e-4, lr_scheduler_type="cosine", warmup_steps=15, bf16=torch.cuda.is_bf16_supported(),
