@@ -76,10 +76,15 @@ lora = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type
 model = get_peft_model(model, lora)
 model.print_trainable_parameters()
 
-# 超参：等效 batch 仍为 16（4×4），4090 上比 1×16 快 3-4 倍
+# 超参：按显存自适应批大小，等效 batch 恒为 16（优化动力学不变）
+# 24GB(4090)=4x4；16GB(4060Ti/4080)=2x8；12GB(3080)=1x16
+V = torch.cuda.get_device_properties(0).total_memory / 1024**3
+BS = 4 if V >= 20 else (2 if V >= 14 else 1)
+GA = 16 // BS
+print(f"GPU 显存 {V:.1f}GB -> batch {BS} x accum {GA} (等效 {BS * GA})", flush=True)
 args = TrainingArguments(
-    output_dir=OUT, num_train_epochs=2, per_device_train_batch_size=4, gradient_accumulation_steps=4,
-    learning_rate=1e-4, lr_scheduler_type="cosine", warmup_steps=15, bf16=True,
+    output_dir=OUT, num_train_epochs=2, per_device_train_batch_size=BS, gradient_accumulation_steps=GA,
+    learning_rate=1e-4, lr_scheduler_type="cosine", warmup_steps=15, bf16=torch.cuda.is_bf16_supported(),
     gradient_checkpointing=True, logging_steps=5, save_strategy="no", report_to=[],
     optim="paged_adamw_8bit", dataloader_num_workers=0, seed=42)
 
