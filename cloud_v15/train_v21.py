@@ -85,12 +85,14 @@ model.print_trainable_parameters()
 # 24GB(4090)=4x4；16GB(4060Ti/4080)=2x8；12GB(3080)=1x16
 BS = 4 if MEM >= 20 else (2 if MEM >= 14 else 1)
 GA = 16 // BS
-print(f"GPU 显存 {MEM:.1f}GB -> batch {BS} x accum {GA} (等效 {BS * GA})", flush=True)
+# 优化器：小卡用 bitsandbytes 8bit（省显存）；大卡用原生 AdamW（不依赖 bnb）
+OPT = "paged_adamw_8bit" if MEM < 40 else "adamw_torch"
+print(f"GPU 显存 {MEM:.1f}GB -> batch {BS} x accum {GA} (等效 {BS * GA}) optim={OPT}", flush=True)
 args = TrainingArguments(
     output_dir=OUT, num_train_epochs=2, per_device_train_batch_size=BS, gradient_accumulation_steps=GA,
     learning_rate=1e-4, lr_scheduler_type="cosine", warmup_steps=15, bf16=torch.cuda.is_bf16_supported(),
     gradient_checkpointing=True, logging_steps=5, save_strategy="no", report_to=[],
-    optim="paged_adamw_8bit", dataloader_num_workers=0, seed=42)
+    optim=OPT, dataloader_num_workers=0, seed=42)
 
 trainer = Trainer(model=model, args=args, train_dataset=SFT(raw), data_collator=collate)
 trainer.train()
