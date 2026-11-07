@@ -6,10 +6,10 @@ unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
 cd /root/autodl-tmp || exit 1
 
 echo "[1] torch $(date)"
-pip install -q -U torch -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install -q -U torch -i https://mirrors.aliyun.com/pypi/simple/
 pip uninstall -y torchvision torchaudio 2>/dev/null
 echo "[2] deps $(date)"
-pip install -q -U transformers peft accelerate datasets gguf modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install -q -U transformers peft accelerate datasets gguf modelscope bitsandbytes sentencepiece -i https://mirrors.aliyun.com/pypi/simple/
 
 echo "[3] verify $(date)"
 python - <<'PY'
