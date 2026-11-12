@@ -16,7 +16,7 @@
 
 模型体积 5.8GB，超过 GitHub 单文件 2GB 限制，Releases 中分为 3 个分卷，合并后即为完整 GGUF。
 
-1. **下载**：到 [Releases](https://github.com/qzhi22603-code/poetry-ai/releases) 页面下载 `poemly-v21-Q6_K.gguf.part1 / .part2 / .part3` 三个文件，放在同一目录。
+1. **下载**：到 [Releases](https://github.com/qzhi22603-code/Poemly/releases) 页面下载 `poemly-v21-Q6_K.gguf.part1 / .part2 / .part3` 三个文件，放在同一目录。
 
 2. **合并分卷**：
 
