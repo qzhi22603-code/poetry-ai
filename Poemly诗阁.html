@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>poemly · 诗阁</title>
+<title>Poemly · 诗阁</title>
 <link rel="icon" href="poemly_favicon.ico">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -35,7 +35,7 @@ header span { font-size:12px; opacity:.6; }
 </head>
 <body>
 <header>
-  <h1>poemly · 诗阁</h1>
+  <h1>Poemly · 诗阁</h1>
   <span>自训诗词模型 · 独立创作 · 平水韵</span>
 </header>
 <div id="chat"></div>
@@ -70,7 +70,7 @@ function add(cls, text) {
     const av = document.createElement("img");
     av.className = "avt";
     av.src = "poemly_avatar.png";
-    av.alt = "poemly";
+    av.alt = "Poemly";
     d.appendChild(av);
   }
   const b = document.createElement("div");
@@ -86,8 +86,8 @@ if (history.length) {
 } else {
   const w = document.createElement("div");
   w.className = "welcome";
-  w.innerHTML = '<img src="poemly_standing.png" alt="poemly">'
-    + '<h2>poemly · 诗阁</h2>'
+  w.innerHTML = '<img src="poemly_standing.png" alt="Poemly">'
+    + '<h2>Poemly · 诗阁</h2>'
     + '<p>自训诗词模型 v2.1 · 独立创作 · 平水韵<br>出题便是——五言七言、绝句律诗皆可，查韵问典亦无不可。</p>';
   chat.appendChild(w);
 }

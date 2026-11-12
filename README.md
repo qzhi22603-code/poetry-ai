@@ -1,4 +1,4 @@
-# poemly · 古典诗词大模型
+# Poemly · 古典诗词大模型
 
 > 基于 Qwen2.5-7B QLoRA 微调的古典诗词创作助手：三段式创作（先立意 → 作诗 → 逐联解意象）、用韵依平水韵、反抄袭防线、可选 RAG 知识库增强。24 天迭代 11 个版本，从 0.5B 小模型一路进化到 7B 现役版本，全程数据集自建、单卡可训。
 
@@ -37,11 +37,11 @@
    ollama create poemly-v21 -f Modelfile-v21
    ollama run poemly-v21
    ```
-   `Modelfile-v21` 已内置系统人设与生成参数，导入即可获得完整的 poemly 行为。之后也可把 Modelfile 第 8 行改为 `FROM poemly-v21:latest` 方便重装。
+   `Modelfile-v21` 已内置系统人设与生成参数，导入即可获得完整的 Poemly 行为。之后也可把 Modelfile 第 8 行改为 `FROM poemly-v21:latest` 方便重装。
 
 ## 诗阁前端
 
-`Poemly诗阁.html` 是 poemly 的聊天前端（浏览器打开即用），会话本地保存在 localStorage。
+`Poemly诗阁.html` 是 Poemly 的聊天前端（浏览器打开即用），会话本地保存在 localStorage。
 
 - 启动 `ollama serve` 后，前端**优先连接 RAG 代理**（`127.0.0.1:11499`，若你部署了 [RAG 增强模块](RAG/)），**代理不在时自动回退直连 ollama**（`127.0.0.1:11434`），普通用户无需任何额外部署。
 - 直接双击 HTML 打开时，浏览器 Origin 为 `null`，需让 ollama 放行跨域：
@@ -52,9 +52,9 @@ RAG 增强模块（可选，进阶）：`RAG/rag_proxy.py` 提供混合检索（
 
 ## 项目形象
 
-poemly 的 Q 版形象是一位执笔的古典少女：墨色渐变长发、金笔簪与红梅发饰、红云肩金线汉服，腰间挂墨桶与朱砂印章——文房四宝随身，落笔生花。
+Poemly 的 Q 版形象是一位执笔的古典少女：墨色渐变长发、金笔簪与红梅发饰、红云肩金线汉服，腰间挂墨桶与朱砂印章——文房四宝随身，落笔生花。
 
-![poemly Q版形象三视图](assets/mascot/mascot-turnaround.jpg)
+![Poemly Q版形象三视图](assets/mascot/mascot-turnaround.jpg)
 
 素材均在 `assets/mascot/`，点开即可下载：
 
