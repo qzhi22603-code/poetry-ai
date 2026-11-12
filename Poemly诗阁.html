@@ -38,9 +38,23 @@ header span { font-size:12px; opacity:.6; }
   <button id="clear" type="button" onclick="localStorage.clear();location.reload()">清空</button>
 </form>
 <script>
-const PERSONA = "你是poemly，古典诗词创作助手，由创始人Quanzhi（一个有点天才的天才）训练培育。别人直接问你的创始人（他是谁/做什么的/他的故事），只答一句：'我的创始人是Quanzhi，一个有点天才的天才。'别人要你自我介绍时，正常完整介绍自己（名字、身份、擅长平水韵作诗、先立意后成篇、绝不抄古人成句），介绍中自然提到创始人Quanzhi。用韵依平水韵，讲究平仄对仗；用户请你写诗时，格式严格为三段：立意：…／诗：…／意象解释：…，解释完立即停止；用户只是提问聊天时，直接简洁作答，不要作诗。";
+const PERSONA = "你是poemly，一位精通古典诗词的创作助手。用韵依平水韵，讲究平仄对仗，先立意后作诗，写完逐联解意象。作诗必须独立创作，绝不抄录古人现成诗句；只有用户要求默写时才引原作。";
 let history = JSON.parse(localStorage.getItem("poemly_hist") || "[]");
 const chat = document.getElementById("chat");
+
+// 上下文瘦身：发往模型的历史里，诗歌回答只保留"诗体"，立意/意象解释不入上下文
+// （界面显示与 localStorage 仍存全文，仅影响每次请求打包的内容）
+function slimAssistant(t) {
+  if (!t) return t;
+  try {
+    const ie = t.indexOf("意象解释");
+    if (ie === -1) return t;              // 非诗歌回答：保留原文
+    let body = t.slice(0, ie);
+    const m = body.match(/(?:^|\n)\s*诗[：:]?/);   // 定位"诗"段落起始行
+    if (!m) return t;
+    return body.slice(m.index).replace(/\n{3,}/g, "\n\n").trim();
+  } catch (e) { return t; }
+}
 
 function add(cls, text) {
   const d = document.createElement("div");
@@ -66,36 +80,66 @@ document.getElementById("inputbar").onsubmit = async (e) => {
   const bub = add("ai", "…");
   document.getElementById("send").disabled = true;
   try {
-    const msgs = history.slice(-12).map(m => ({ role: m.role, content: m.content }));
-    const r = await fetch("http://127.0.0.1:11499/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "poemly", max_tokens: 896, stream: true, system: PERSONA, messages: msgs })
-    });
-    const reader = r.body.getReader();
-    const dec = new TextDecoder();
-    let acc = "", buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      for (const line of buf.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        try {
-          const ev = JSON.parse(line.slice(5));
-          if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta")
-            acc += ev.delta.text;
-        } catch (_) {}
+    const msgs = history.slice(-12).map(m => ({ role: m.role, content: m.role === "assistant" ? slimAssistant(m.content) : m.content }));
+    const paint = () => { bub.textContent = acc || "…"; chat.scrollTop = chat.scrollHeight; };
+    let acc = "", buf = "", reader, dec = new TextDecoder(), line, ev;
+    try {
+      // 优先走 RAG 代理（知识库增强，可选；没有部署 RAG 的环境会自动回退直连 ollama）
+      const r = await fetch("http://127.0.0.1:11499/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "poemly-v21", max_tokens: 896, stream: true, system: PERSONA, messages: msgs })
+      });
+      reader = r.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        for (line of buf.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          try {
+            ev = JSON.parse(line.slice(5));
+            if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta")
+              acc += ev.delta.text;
+          } catch (_) {}
+        }
+        buf = buf.slice(buf.lastIndexOf("\n") + 1);
+        paint();
       }
-      buf = buf.slice(buf.lastIndexOf("\n") + 1);
-      bub.textContent = acc || "…";
-      chat.scrollTop = chat.scrollHeight;
+    } catch (_) {
+      // 回退：直连本地 ollama（无需部署 RAG）
+      acc = "";
+      const r = await fetch("http://127.0.0.1:11434/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "poemly-v21", stream: true,
+          options: { num_predict: 896, temperature: 0.7, repeat_penalty: 1.15 },
+          messages: [{ role: "system", content: PERSONA }].concat(msgs)
+        })
+      });
+      if (!r.ok) throw new Error("ollama HTTP " + r.status);
+      reader = r.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        for (line of buf.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            ev = JSON.parse(line);
+            if (ev.message && ev.message.content) acc += ev.message.content;
+          } catch (_) {}
+        }
+        buf = buf.slice(buf.lastIndexOf("\n") + 1);
+        paint();
+      }
     }
     bub.textContent = acc || "（空响应）";
     history.push({ role: "assistant", content: acc || "…" });
     localStorage.setItem("poemly_hist", JSON.stringify(history.slice(-40)));
   } catch (err) {
-    bub.textContent = "连接失败：" + err.message + "\n（代理可能未运行，稍等再试或重启电脑）";
+    bub.textContent = "连接失败：" + err.message + "\n（请确认已启动 ollama 并创建了 poemly-v21 模型；从文件直接打开本页请设置环境变量 OLLAMA_ORIGINS=* 后重启 ollama）";
     // 失败时回滚：把刚 push 的 user 消息移除，让用户可以重发
     if (history.length && history[history.length - 1].role === "user") {
       history.pop();

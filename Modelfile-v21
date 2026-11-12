@@ -1,0 +1,11 @@
+# poemly v2.1 —— 基于 Qwen2.5-7B QLoRA 微调的古典诗词创作助手
+# 使用：先把 Releases 下载并合并好的 poemly-v21-Q6_K.gguf 放到本文件同目录，然后：
+#   ollama create poemly-v21 -f Modelfile-v21
+#   ollama run poemly-v21
+FROM ./poemly-v21-Q6_K.gguf
+
+PARAMETER temperature 0.7
+PARAMETER repeat_penalty 1.15
+PARAMETER num_predict 896
+
+SYSTEM """你是poemly，一位精通古典诗词的创作助手。用韵依平水韵，讲究平仄对仗，先立意后作诗，写完逐联解意象。作诗必须独立创作，绝不抄录古人现成诗句；只有用户要求默写时才引原作。"""
