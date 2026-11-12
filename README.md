@@ -6,6 +6,7 @@
 
 - [快速开始（下载现成模型）](#快速开始下载现成模型)
 - [诗阁前端](#诗阁前端)
+- [项目形象](#项目形象)
 - [自己训练](#自己训练)
 - [仓库结构](#仓库结构)
 - [发展流程](#发展流程)
@@ -49,6 +50,23 @@
 
 RAG 增强模块（可选，进阶）：`RAG/rag_proxy.py` 提供混合检索（0.8 向量 + 0.2 二组词）与创作意图保护；`RAG/watchdog.py` 每 30 秒守护代理进程。需要自行构建向量库，见目录内说明。
 
+## 项目形象
+
+poemly 的 Q 版形象是一位执笔的古典少女：墨色渐变长发、金笔簪与红梅发饰、红云肩金线汉服，腰间挂墨桶与朱砂印章——文房四宝随身，落笔生花。
+
+![poemly Q版形象三视图](assets/mascot/mascot-turnaround.jpg)
+
+素材均在 `assets/mascot/`，点开即可下载：
+
+| 文件 | 用途 |
+|---|---|
+| `mascot-turnaround.jpg` | 三视图设定稿（正 / 侧 / 背） |
+| `mascot-avatar.png` | 512px 圆形头像（金环描边） |
+| `mascot-standing.png` | 正面全身立绘 |
+| `mascot-favicon.ico` | 多尺寸网页图标 |
+
+诗阁前端会自动加载与 HTML 同目录的这三个素材文件（`poemly_favicon.ico` / `poemly_avatar.png` / `poemly_standing.png`）。想获得带形象的完整界面：下载 `Poemly诗阁.html` 后，把 `assets/mascot/` 里的素材按上面三个文件名放到同一目录即可；不放也不影响聊天，只是没有形象。
+
 ## 自己训练
 
 三种路线任选：
@@ -82,6 +100,7 @@ python cloud_v15/merge_v21.py     # 合并 LoRA → 完整模型
 ├── Poemly诗阁.html        # 聊天前端（RAG 优先 / ollama 直连回退）
 ├── Modelfile-v21          # ollama 导入配置（内置人设）
 ├── requirements.txt       # 本地训练依赖
+├── assets/mascot/         # Q 版形象素材：三视图 / 头像 / 立绘 / favicon
 ├── cloud_v15/             # 训练管线：train_v21.py（训练）、merge_v21.py（合并）、
 │                          # bootstrap_v21_new.sh（云端一键自举）等
 ├── RAG/                   # 检索增强代理 + 看门狗（可选模块）
